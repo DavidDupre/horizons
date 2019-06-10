@@ -32,10 +32,11 @@ class BodyResult:
 
 class Horizons:
     TIMEOUT = 4  # seconds
+    PLANET_IDS = [f'{i}99' for i in range(1, 10)]
 
-    def __init__(self):
+    def __init__(self, url='horizons.jpl.nasa.gov', port=6775):
         # connect
-        self.tn = Telnet('horizons.jpl.nasa.gov', 6775)
+        self.tn = Telnet(url, port)
         self._expect('Horizons> ')
         logger.info('connected to HORIZONS')
 
@@ -43,7 +44,9 @@ class Horizons:
         self._write('PAGE')
         self._expect('Output PAGING toggled OFF.')
         self._expect('Horizons> ')
-        logger.debug('disabled output paging')
+
+        # cache major bodies
+        self._major_bodies = None
 
     def __enter__(self):
         return self
@@ -58,10 +61,12 @@ class Horizons:
         self.tn.write(b'\r\n')
 
     def _expect(self, *expected):
+        """Read until a string shows up in the output or a timeout occurs."""
         expected = list(map(re.escape, expected))
         return self._expect_regex(*expected)
 
     def _expect_regex(self, *expected):
+        """Read until a pattern shows up in the output or a timeout occurs."""
         bytes_expected = list(map(str.encode, expected))
         r = self.tn.expect(bytes_expected, Horizons.TIMEOUT)
         output = r[2].decode('utf-8')
@@ -72,11 +77,21 @@ class Horizons:
         logger.debug(f'output: {output}')
         return (r[0], r[1], output)
 
-    def get_major_bodies(self):
-        """Get a list of major bodies
+    def search_major_bodies(self, query: str):
+        """Search the major bodies list. The result will be a subset of `Horizons.get_major_bodies()`.
+        
+        :query str: a search query, e.g. "Saturn" or "699"
+
+        :returns a BodyResult list with all the matching major bodies
         """
-        self._write('MB')
+        self._write(query)
         expect_result = self._expect('Select ... [F]tp, [M]ail, [R]edisplay, ?, <cr>: ')
+
+        # clear space for next query
+        self._write('')
+        self._expect('Horizons> ')
+
+        # split query output into lines
         output = expect_result[2]
         lines = output.split('\r\n')
 
@@ -98,7 +113,49 @@ class Horizons:
             table
         ))
 
-    def get_vectors(self, body_id: str, center='@sun', ref='eclip', epoch_jd_tdb=2458642.5):
+    def get_major_bodies(self):
+        """Get a list of all available major bodies.
+
+        :return a BodyResult list
+        """
+        if not self._major_bodies:
+            self._major_bodies = self.search_major_bodies('MB')
+        return self._major_bodies
+
+    def get_planets(self):
+        """Get a list of all planets and also Pluto.
+
+        :return a BodyResult list made up of all planets and Pluto.
+        """
+        return [b for b in self.get_major_bodies() if b.id in Horizons.PLANET_IDS]
+
+    def get_moons(self, planet_id=None):
+        """Get a list of all moons.
+
+        :param planet_id: the ID of a planet to get moons for. Defaults to None, which will get all moons.
+
+        :return a BodyResult list made up of all moons of the specified planet.
+        """
+        if planet_id and planet_id not in Horizons.PLANET_IDS:
+            raise HorizonsException(f'{planet_id} is not a planet ID')
+
+        moons = []
+        for b in self.get_major_bodies():
+            # Moon IDs have the same first digit as the planet they orbit and are three digits long.
+            # For example, Earth's ID is 399. The Moon's ID is 301.
+            # There are also special cases to avoid: negative IDs or Lagrange points.
+            if all([
+                len(b.id) == 3,
+                b.id not in Horizons.PLANET_IDS,
+                b.id[0] != '-',
+                (not planet_id or planet_id[0] == b.id[0]),
+                'Lagrangian' not in b.other,
+            ]):
+                moons.append(b)
+
+        return moons
+
+    def get_vectors(self, body_id: str, center='sun', ref='eclip', epoch_jd_tdb=2458642.5):
         """Get position and velocity vectors for a body.
 
         :param body_id: the body ID as used in Horizons.BodyResult
@@ -112,6 +169,9 @@ class Horizons:
         # interval. We'll get two sets of vectors at the end but only return the first one (the start date).
         start_date = f'JD{epoch_jd_tdb}'
         end_date = f'JD{epoch_jd_tdb + 1}'
+
+        # the center is assumed to be an Earth station code unless prefixed with an '@' sign
+        center = f'@{center}'
 
         logging.info(f'getting vectors for {body_id} (center: {center}, ref: {ref}, epoch: {epoch_jd_tdb})')
 
