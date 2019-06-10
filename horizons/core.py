@@ -1,8 +1,8 @@
-from dataclasses import dataclass
 from horizons.parse_table import parse_table
 import logging
 import re
 from telnetlib import Telnet
+from typing import NamedTuple, Tuple
 
 
 logger = logging.getLogger(__name__)
@@ -12,17 +12,15 @@ class HorizonsException(Exception):
     pass
 
 
-@dataclass
-class VectorsResult:
+class VectorsResult(NamedTuple):
     """Class for storing the result of a vectors query."""
     epoch_jd_tdb: float
     calendar_date_tdb: str
-    pos_km: (float, float, float)
-    vel_kmps: (float, float, float)
+    pos_km: Tuple[float, float, float]
+    vel_kmps: Tuple[float, float, float]
 
 
-@dataclass
-class BodyResult:
+class BodyResult(NamedTuple):
     """Class for storing the result of a body query."""
     id: str
     name: str
