@@ -43,8 +43,9 @@ class Horizons:
         self._expect('Output PAGING toggled OFF.')
         self._expect('Horizons> ')
 
-        # cache major bodies
+        # cache major bodies and physical properties
         self._major_bodies = None
+        self._physical_props = {}
 
     def __enter__(self):
         return self
@@ -69,8 +70,8 @@ class Horizons:
         r = self.tn.expect(bytes_expected, Horizons.TIMEOUT)
         output = r[2].decode('utf-8')
         if r[1] is None:
-            logging.error(f'expected one of: {expected}')
-            logging.error(f'actual:   \"{output}\"')
+            logger.error(f'expected one of: {expected}')
+            logger.error(f'actual:   \"{output}\"')
             raise HorizonsException(f'Unexpected output: {output}')
         logger.debug(f'output: {output}')
         return (r[0], r[1], output)
@@ -171,7 +172,7 @@ class Horizons:
         # the center is assumed to be an Earth station code unless prefixed with an '@' sign
         center = f'@{center}'
 
-        logging.info(f'getting vectors for {body_id} (center: {center}, ref: {ref}, epoch: {epoch_jd_tdb})')
+        logger.info(f'getting vectors for {body_id} (center: {center}, ref: {ref}, epoch: {epoch_jd_tdb})')
 
         self._write(body_id)
         self._expect('Select ... [E]phemeris, [F]tp, [M]ail, [R]edisplay, ?, <cr>: ')
@@ -247,3 +248,124 @@ class Horizons:
             results.append(result)
 
         return results[0]
+
+    def get_raw_physical_properties(self, body_id: str):
+        """Get the physical properties of a major body.
+        The format of physical properties returned by HORIZONS is inconsistent. This parsing is done on a best-effort
+        basis.
+
+        :param body_id: the ID of the body as returned by Horizons.get_major_bodies
+
+        :returns a dictionary from property name to value. The available properties, their names, and the format of
+            the value are inconsistent between bodies. Some values are dictionaries.
+        """
+        if body_id in self._physical_props:
+            return self._physical_props[body_id]
+
+        logger.info(f'getting phyiscal properties for {body_id}')
+
+        self._write(body_id)
+        expect_result = self._expect('Select ... [E]phemeris, [F]tp, [M]ail, [R]edisplay, ?, <cr>: ')
+        output = expect_result[2]
+        self._write('')
+        self._expect('Horizons> ')
+
+        lines = output.split('\r\n')
+        properties = _parse_physical_properties(lines)
+
+        self._physical_props[body_id] = properties
+        return properties
+
+    def _get_physical_property(self, body_id: str, key: str):
+        props = self.get_raw_physical_properties(body_id)
+        props = _clean_properties(props)
+        if key not in props:
+            return None
+        return props[key]
+
+    def get_radius(self, body_id: str):
+        """Get the radius of a major body
+
+        :param body_id: the ID of the body as returned by Horizons.get_major_bodies
+
+        :returns a dictionary with value, uncertainty, and unit, or None if no radius is found
+        """
+        return self._get_physical_property(body_id, 'radius')
+
+    def get_mass(self, body_id: str):
+        """Get the mass of a major body
+
+        :param body_id: the ID of the body as returned by Horizons.get_major_bodies
+
+        :returns a dictionary with value, uncertainty, and unit, or None is no mass is found
+        """
+        return self._get_physical_property(body_id, 'mass')
+
+
+def _parse_physical_properties(lines):
+    properties = {}
+    lines = lines[5:]
+    building_prop = False
+    building_prop_indent = None
+    building_prop_key = None
+    for line in lines:
+        m = re.search(r"^\s\s(\S.+?)[\=|:](.+?)\s*([A-Z].+)[\=|:](.+)?$", line)
+        if not m:
+            continue
+
+        properties[m.group(1).strip()] = m.group(2).strip()
+
+        if not m.group(4):
+            building_prop = True
+            building_prop_indent = m.start(3)
+            building_prop_key = m.group(3).strip()
+            properties[building_prop_key] = {}
+        elif building_prop and m.start(3) == building_prop_indent + 2:
+            properties[building_prop_key][m.group(3).strip()] = m.group(4).strip()
+        else:
+            building_prop = False
+            properties[m.group(3).strip()] = m.group(4).strip()
+
+    return properties
+
+
+def _parse_number(number: str):
+    m = re.search(r"^~?([\d+|\.]\.?\d*)\s*(\+\-)?\s*(\d*\.?\d*)?(.+)?$", number)
+    if not m:
+        return None
+    return {
+        'value': float(m.group(1)),
+        'uncertainty': float(m.group(3)) if m.group(3) else None,
+        'unit': m.group(4) if m.group(4) else None,
+    }
+
+
+def _clean_properties(props):
+    clean_props = {}
+    for key, val in props.items():
+        mass_match = re.search(r"^mass.*10\^(\d+).*kg.*$", key, re.IGNORECASE)
+        if mass_match:
+            exp = int(mass_match.group(1))
+            number = _parse_number(val)
+            if not number:
+                logger.warning(f'failed to parse mass property: \"{val}\"')
+            else:
+                number['unit'] = 'kg'
+                number['value'] *= 10**exp
+                if number['uncertainty']:
+                    number['uncertainty'] *= 10**exp
+
+                clean_props['mass'] = number
+            continue
+
+        radius_match = re.search(r"^(vol\. mean )?radius.*km.*$", key, re.IGNORECASE)
+        if radius_match:
+            number = _parse_number(val)
+            if not number:
+                logger.warning(f'failed to parse radius property: \"{val}\"')
+            else:
+                number['unit'] = 'km'
+                clean_props['radius'] = number
+            continue
+
+    return clean_props

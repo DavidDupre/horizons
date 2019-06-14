@@ -9,6 +9,10 @@ horizons_log = logging.getLogger(__name__)
 horizons_log.setLevel(logging.INFO)
 horizons_log.propagate = True
 
+fh = logging.FileHandler('horizons.log')
+fh.setLevel(logging.DEBUG)
+logging.getLogger().addHandler(fh)
+
 
 with Horizons() as h:
     vector_map = {}
