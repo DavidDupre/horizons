@@ -1,7 +1,7 @@
 from horizons.parse_table import parse_table
 import logging
 import re
-from telnetlib import Telnet
+import requests
 from typing import NamedTuple, Tuple
 
 
@@ -29,19 +29,11 @@ class BodyResult(NamedTuple):
 
 
 class Horizons:
-    TIMEOUT = 4  # seconds
     PLANET_IDS = [f'{i}99' for i in range(1, 10)]
 
-    def __init__(self, url='horizons.jpl.nasa.gov', port=6775):
-        # connect
-        self.tn = Telnet(url, port)
-        self._expect('Horizons> ')
-        logger.info('connected to HORIZONS')
-
-        # disable scrolling
-        self._write('PAGE')
-        self._expect('Output PAGING toggled OFF.')
-        self._expect('Horizons> ')
+    def __init__(self, url='https://ssd.jpl.nasa.gov/horizons_batch.cgi'):
+        self._session = requests.Session()
+        self._url = url
 
         # cache major bodies and physical properties
         self._major_bodies = None
@@ -51,30 +43,20 @@ class Horizons:
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        self._write('X')
-        self.tn.close()
+        self._session.close()
         return True
 
-    def _write(self, command):
-        self.tn.write(command.encode('utf-8'))
-        self.tn.write(b'\r\n')
+    def _get(self, **options):
+        params = {'batch': '1'}
 
-    def _expect(self, *expected):
-        """Read until a string shows up in the output or a timeout occurs."""
-        expected = list(map(re.escape, expected))
-        return self._expect_regex(*expected)
+        # make each key upper case and wrap the values in quotes
+        for key, option in options.items():
+            params[key.upper()] = f'\'{option.upper()}\''
 
-    def _expect_regex(self, *expected):
-        """Read until a pattern shows up in the output or a timeout occurs."""
-        bytes_expected = list(map(str.encode, expected))
-        r = self.tn.expect(bytes_expected, Horizons.TIMEOUT)
-        output = r[2].decode('utf-8')
-        if r[1] is None:
-            logger.error(f'expected one of: {expected}')
-            logger.error(f'actual:   \"{output}\"')
-            raise HorizonsException(f'Unexpected output: {output}')
-        logger.debug(f'output: {output}')
-        return (r[0], r[1], output)
+        r = self._session.get(self._url, params=params)
+        r.raise_for_status()
+        logger.debug(f'output: {r.text}')
+        return r.text
 
     def search_major_bodies(self, query: str):
         """Search the major bodies list. The result will be a subset of `Horizons.get_major_bodies()`.
@@ -83,20 +65,16 @@ class Horizons:
 
         :returns a BodyResult list with all the matching major bodies
         """
-        self._write(query)
-        expect_result = self._expect('Select ... [F]tp, [M]ail, [R]edisplay, ?, <cr>: ')
+        logger.debug(f'searching major bodies with query \'{query}\'')
+        output = self._get(command=query)
+        lines = output.split('\n')
 
-        # clear space for next query
-        self._write('')
-        self._expect('Horizons> ')
-
-        # split query output into lines
-        output = expect_result[2]
-        lines = output.split('\r\n')
+        if not lines[1].startswith(' Multiple major-bodies match string'):
+            raise HorizonsException('search gave unexpected result')
 
         # trim the output to just the table
         last_line_index = next(i for (i, line) in enumerate(lines) if line.isspace())
-        lines = lines[4:last_line_index]
+        lines = lines[3:last_line_index]
 
         # parse the output as a table
         logger.debug('parsing lines as table')
@@ -164,59 +142,23 @@ class Horizons:
 
         :returns a VectorResult
         """
-        # We're only interested in the vectors at the provided date, but the API insists we gather points over an
-        # interval. We'll get two sets of vectors at the end but only return the first one (the start date).
-        start_date = f'JD{epoch_jd_tdb}'
-        end_date = f'JD{epoch_jd_tdb + 1}'
-
-        # the center is assumed to be an Earth station code unless prefixed with an '@' sign
-        center = f'@{center}'
-
         logger.info(f'getting vectors for {body_id} (center: {center}, ref: {ref}, epoch: {epoch_jd_tdb})')
-
-        self._write(body_id)
-        self._expect('Select ... [E]phemeris, [F]tp, [M]ail, [R]edisplay, ?, <cr>: ')
-        self._write('E')
-        self._expect('Observe, Elements, Vectors  [o,e,v,?] : ')
-        self._write('V')
-        expect_result = self._expect(
-            'Coordinate center [ <id>,coord,geo  ] : ',
-            'Use previous center  [ cr=(y), n, ? ] : '
+        output = self._get(
+            command=body_id,
+            make_ephem='yes',
+            table_type='vectors',
+            center=f'@{center}',
+            ref_plane=ref,
+            tlist=str(epoch_jd_tdb),
+            ref_system='j2000',
+            out_units='km-s',
+            vec_table='2',
+            vec_corr='lt',
+            csv_format='yes',
         )
-        if expect_result[0] == 1:
-            # if the "previous center" option came up, reply No and prepare to be asked which center
-            self._write('N')
-            self._expect('Coordinate center [ <id>,coord,geo  ] : ')
-        self._write(center)
-        self._expect('Reference plane [eclip, frame, body ] : ')
-        self._write(ref)
-        self._expect_regex(r'Starting TDB \[.*\] : ')
-        self._write(start_date)
-        self._expect_regex(r'Ending   TDB \[.*\] : ')
-        self._write(end_date)
-        self._expect('Output interval [ex: 10m, 1h, 1d, ? ] : ')
-        self._write('1d')
-        self._expect('Accept default output [ cr=(y), n, ?] : ')
-        self._write('N')
-        self._expect('Output reference frame [J2000, B1950] : ')
-        self._write('J2000')
-        self._expect('Corrections [ 1=NONE, 2=LT, 3=LT+S ]  : ')
-        self._write('LT')
-        self._expect('Output units [1=KM-S, 2=AU-D, 3=KM-D] : ')
-        self._write('KM-S')
-        self._expect('Spreadsheet CSV format    [ YES, NO ] : ')
-        self._write('YES')
-        self._expect('Output delta-T (TDB-UT)   [ YES, NO ] : ')
-        self._write('NO')
-        self._expect('Select output table type  [ 1-6, ?  ] : ')
-        self._write('2')
-        expect_result = self._expect('>>> Select... [A]gain, [N]ew-case, [F]tp, [M]ail, [R]edisplay, ? : ')
-        output = expect_result[2]
-        self._write('N')
-        self._expect('Horizons> ')
 
         # find the lines between $$SOE and $$EOE
-        lines = output.split('\r\n')
+        lines = output.split('\n')
         after_soe = False
         rows = []
         for line in lines:
@@ -264,13 +206,9 @@ class Horizons:
 
         logger.info(f'getting phyiscal properties for {body_id}')
 
-        self._write(body_id)
-        expect_result = self._expect('Select ... [E]phemeris, [F]tp, [M]ail, [R]edisplay, ?, <cr>: ')
-        output = expect_result[2]
-        self._write('')
-        self._expect('Horizons> ')
+        output = self._get(command=body_id)
 
-        lines = output.split('\r\n')
+        lines = output.split('\n')
         properties = _parse_physical_properties(lines)
 
         self._physical_props[body_id] = properties
@@ -304,7 +242,7 @@ class Horizons:
 
 def _parse_physical_properties(lines):
     properties = {}
-    lines = lines[5:]
+    lines = lines[4:]
     building_prop = False
     building_prop_indent = None
     building_prop_key = None

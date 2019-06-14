@@ -2,7 +2,7 @@
 
 A python client for the [JPL HORIZONS System](https://ssd.jpl.nasa.gov/?horizons).
 
-This is an ugly telnet and regex fueled API. JPL has a much cleaner [SSD/CNEOS API Service](https://ssd-api.jpl.nasa.gov/) that overlaps with HORIZONS in some places. HORIZONS' orbital element data on "Major Bodies" (i.e. planets, moons, and some others) are not available yet in this other collection of APIs. This project only aims to cover those features.
+This is an ugly regex fueled API. JPL has a much cleaner [SSD/CNEOS API Service](https://ssd-api.jpl.nasa.gov/) that overlaps with HORIZONS in some places. HORIZONS' orbital element data on "Major Bodies" (i.e. planets, moons, and some others) are not available yet in this other collection of APIs. This project only aims to cover those features.
 
 Only getting position and velocity vectors of major bodies is supported. This project could be extended to pull from other features of HORIZONS, like retrieving orbital elements.
 
