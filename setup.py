@@ -5,7 +5,7 @@ with open('README.md') as f:
 
 setup(
     name='horizons',
-    version='0.1.1',
+    version='0.2.0',
     description='JPL HORIZONS System client',
     long_description=readme,
     long_description_content_type='text/markdown',
