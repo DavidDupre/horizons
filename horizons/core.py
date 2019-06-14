@@ -36,6 +36,7 @@ class PhysicalProperty(NamedTuple):
 
 class Horizons:
     PLANET_IDS = [f'{i}99' for i in range(1, 10)]
+    SUN_ID = '10'
 
     def __init__(self, url='https://ssd.jpl.nasa.gov/horizons_batch.cgi'):
         self._session = requests.Session()
@@ -104,6 +105,9 @@ class Horizons:
         if not self._major_bodies:
             self._major_bodies = self.search_major_bodies('MB')
         return self._major_bodies
+
+    def get_sun(self):
+        return next(b for b in self.get_major_bodies() if b.id == Horizons.SUN_ID)
 
     def get_planets(self):
         """Get a list of all planets and also Pluto.
