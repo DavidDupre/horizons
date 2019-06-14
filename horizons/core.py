@@ -28,6 +28,12 @@ class BodyResult(NamedTuple):
     other: str
 
 
+class PhysicalProperty(NamedTuple):
+    value: float
+    uncertainty: float
+    unit: str
+
+
 class Horizons:
     PLANET_IDS = [f'{i}99' for i in range(1, 10)]
 
@@ -219,7 +225,12 @@ class Horizons:
         props = _clean_properties(props)
         if key not in props:
             return None
-        return props[key]
+        prop = props[key]
+        return PhysicalProperty(
+            prop['value'],
+            prop['uncertainty'],
+            prop['unit'],
+        )
 
     def get_radius(self, body_id: str):
         """Get the radius of a major body
