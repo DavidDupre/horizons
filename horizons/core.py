@@ -150,7 +150,7 @@ class Horizons:
         :param ref: the reference frame (can be eclip, frame, or body; defaults to eclip)
         :param date_jdtdb: the epoch to find vectors for (defaults to 2458642.5 i.e. June 9, 2019)
 
-        :returns a VectorResult
+        :returns a VectorResult, or None if no vectors are available at the requested epoch
         """
         logger.info(f'getting vectors for {body_id} (center: {center}, ref: {ref}, epoch: {epoch_jd_tdb})')
         output = self._get(
@@ -178,6 +178,12 @@ class Horizons:
                 after_soe = True
             elif after_soe:
                 rows.append(line)
+
+        # If $$SOE and $$EOE aren't found, there are no ephemerics for this body at this time
+        # This is true for at least Daphnis
+        if not rows:
+            logger.warning(f'No ephemeris for {body_id}')
+            return None
 
         # the rows are JDTDB, Calendar Date (TDB), X, Y, Z, VX, VY, VZ
         results = []
@@ -216,7 +222,10 @@ class Horizons:
 
         logger.info(f'getting phyiscal properties for {body_id}')
 
-        output = self._get(command=body_id)
+        output = self._get(
+            command=body_id,
+            make_ephem='no',
+        )
 
         lines = output.split('\n')
         properties = _parse_physical_properties(lines)
@@ -257,7 +266,6 @@ class Horizons:
 
 def _parse_physical_properties(lines):
     properties = {}
-    lines = lines[4:]
     building_prop = False
     building_prop_indent = None
     building_prop_key = None
@@ -311,7 +319,7 @@ def _clean_properties(props):
                 clean_props['mass'] = number
             continue
 
-        radius_match = re.search(r"^(vol\. mean )?radius.*km.*$", key, re.IGNORECASE)
+        radius_match = re.search(r"^(vol\. )?(mean )?radius.*km.*$", key, re.IGNORECASE)
         if radius_match:
             number = _parse_number(val)
             if not number:
